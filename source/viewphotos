@@ -1,0 +1,787 @@
+#!/usr/bin/python3
+
+# Image viewer built using Python which remembers previous files
+# without having to scan an entire directory tree by storing
+# file data in a SQLite database. Show off your entire photo 
+# album in an instant. Very useful on the Raspberry Pi with a
+# wireless keyboard.
+#
+#	Usage:
+#		viewphotos dirname
+#
+# Keys:
+#
+# Space				Next picture
+# Backspace		Previous picture
+# Arrow keys	Move image around
+# =						Zoom in
+# -						Zoom out
+# t						Random image
+# r						Enable random playlist mode
+# d						Delete image (renames to image.deleted)
+# u						Restore last deleted image
+# g						Moves image to a subdirectory called "Favorites"
+# f						Toggle fullscreen
+# .						Rotates image left and automatically save
+# /						Rotates image right and automatically save
+# n						Rescan files
+# Escape			Quit
+#
+# Released under the GPL by Jim Yu (me@pafera.com)
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import random
+import time
+import shutil
+
+from math import *
+from multiprocessing import Process, Value
+
+import PySide
+from PySide.QtGui import *
+from PySide.QtCore import *
+
+from possumtypes import *
+from db import *
+
+BLACK	=	QColor(0x00, 0x00, 0x00)
+WHITE	=	QColor(0xff, 0xff, 0xff)
+GREEN	=	QColor(0x00, 0xff, 0x00)
+BLUE	=	QColor(0x00, 0x00, 0xff)
+RED		=	QColor(0xff, 0x00, 0x00)
+
+# *********************************************************************
+class DBDirectory(ModelBase):
+
+	_fields	=	{
+		'parentid':						('INT',				'NOT NULL', NullValidator()),
+		'dirname':						('TEXT',			'UNIQUE',	NullValidator()),
+		'flags':							('INT',				'NOT NULL',	NullValidator()),
+	}
+
+	# -------------------------------------------------------------------
+	def __init__(self, db	=	None):
+		super().__init__(db	=	db)
+
+	# -------------------------------------------------------------------
+	def List(self):
+		if not self.id:
+			raise Exception('This directory has not been saved!')
+
+		return DBFile(db = self._db).Find('WHERE directoryid = ? ORDER BY filename', self.id)
+
+# *********************************************************************
+class DBFile(ModelBase):
+
+	_fields	=	{
+		'directoryid':				('INT',				'NOT NULL',	NullValidator()),
+		'size':								('INT',				'NOT NULL',	NullValidator()),
+		'flags':							('INT',				'NOT NULL',	NullValidator()),
+		'filename':						('TEXT',			'NOT NULL',	NullValidator()),
+		'modified':						('TEXT',			'NOT NULL',	NullValidator()),
+	}
+
+	# -------------------------------------------------------------------
+	def __init__(self, db	=	None):
+		super().__init__(db	=	db)
+		self.dirname	=	None
+
+	# -------------------------------------------------------------------
+	def FullPath(self):
+		if not self.directoryid:
+			raise Exception('This DBFile has not been initialized yet.')
+
+		if self.dirname:
+			return os.path.join(self.dirname, self.filename)
+
+		d	=	DBDirectory(db = self._db).Load(self.directoryid)
+
+		self.dirname	=	d.dirname
+		return os.path.join(self.dirname, self.filename)
+
+	# -------------------------------------------------------------------
+	def FindFile(self, dirname, filename):
+		d	=	DBDirectory(db = self._db).Find('WHERE dirname = ?', dirname)
+
+		if not d:
+			return None
+
+		f	=	self.Find('WHERE directoryid = ? AND filename = ?', (d.id, filename))
+
+		if not f:
+			return None
+
+		return f[0]
+
+# =====================================================================
+def ScanDir(pausescan, stopscan, dirname):
+	#try:
+	timecommitted	=	time.time()
+
+	db	=	DB('default', os.path.join(os.path.expanduser('~'), '.config', 'viewphotos.db'))
+	
+	filesprocessed	=	0
+	db.Begin()
+	filesprocessed	=	ScanDirRecurse(pausescan, stopscan, db, 0, dirname, timecommitted, filesprocessed)
+	db.Commit()
+
+	Print('Scanning finished.')
+	#except Exception as e:
+	#	Print('Problem scanning {}: {}', dirname, e)
+
+# =====================================================================
+def ScanDirRecurse(pausescan, stopscan, db, dirid, dirname, timecommitted, filesprocessed):
+	dbdir		=	DBDirectory(db = db)
+	dbfile	=	DBFile(db = db)
+
+	Print('Scanning {}', dirname)
+	d	=	dbdir.Find('WHERE dirname = ?', dirname)
+
+	if d:
+		d	=	d[0]
+		existingfiles	=	d.List()
+		subdirs				=	dbdir.Find("WHERE parentid = ?", d.id)
+	else:
+		d	=	dbdir
+		d.parentid	=	dirid
+		d.dirname		=	dirname
+		d.Save()
+		existingfiles	=	[]
+		subdirs				=	[]
+
+	currentfiles	=	[]
+	currentdirs		=	[]
+
+	for filename in os.listdir(dirname):
+		try:
+			if stopscan.value:
+				return
+
+			if pausescan.value:
+				db.Commit()
+				time.sleep(1)
+				db.Begin()
+
+			fullpath	=	os.path.join(dirname, filename)
+
+			if os.path.isdir(fullpath):
+				filesprocessed	=	ScanDirRecurse(pausescan, stopscan, db, d.id, fullpath, timecommitted, filesprocessed)
+				currentdirs.append(fullpath)
+			else:
+				currentfiles.append(filename)
+				l	=	filename.lower()
+
+				if l.endswith('.jpg') or l.endswith('.jpeg'):
+					f	=	dbfile.Find('WHERE directoryid = ? AND filename = ?', (d.id, filename))
+
+					stats	=	os.stat(fullpath)
+					
+					if f:
+						f	=	f[0]
+						
+						if int(float(f.modified))	!= int(float(stats.st_mtime)) or f.size != stats.st_size:
+							Print('{} != {}\t{} != {}', f.modified, stats.st_mtime, f.size, stats.st_size)
+							f.modified		=	stats.st_mtime
+							f.size				=	stats.st_size
+							f.Save()
+							Print('Updated {}', fullpath)
+					else:
+						f	=	DBFile(db = db)
+						f.directoryid	=	d.id
+						f.filename		=	filename
+						f.modified		=	stats.st_mtime
+						f.size				=	stats.st_size
+						f.Save()
+						Print('Added {}', fullpath)
+
+						t	=	time.time()
+
+						if timecommitted + 3 > t:
+							db.Commit()
+							db.Begin()
+							timecommitted	=	t
+
+			filesprocessed	+=	1
+
+			if filesprocessed % 100 == 0:
+				Print('Processed {} files', filesprocessed)
+		except Exception as e:
+			Print(e)
+
+	for existing in existingfiles:
+
+		found	=	False
+
+		for current in currentfiles:
+			if current == existing.filename:
+				found	=	True
+				continue
+
+		if not found:
+			Print('Previous file {} not found. Deleting...', existing.filename)
+			existing.Delete()
+
+	for existing in subdirs:
+
+		found	=	False
+
+		for current in currentdirs:
+			if current == existing.dirname:
+				found	=	True
+				continue
+
+		if not found:
+			Print('Previous directory {} not found. Deleting...', existing.dirname)
+
+			dbfile.Find('WHERE directoryid = ?', existing.id)[0].Delete()
+			existing.Delete()
+	
+	return filesprocessed
+
+# *********************************************************************
+class ImageWidget(QWidget):
+
+	TOP_LEFT			=	1
+	TOP_RIGHT			=	2
+	BOTTOM_LEFT		=	3
+	BOTTOM_RIGHT	=	4
+	CENTER				= 5
+
+	# -------------------------------------------------------------------
+	def __init__(self):
+		super().__init__()
+
+		self.pixmap			=	None
+		self.msgs				=	['', '', '', '', '']
+		self.textcolor	=	GREEN
+		self.filename		=	''
+
+		self.dx					=	0
+		self.dy					=	0
+		self.zoom				=	1.0
+
+		self.preload						=	''
+		self.preloadedimg				=	None
+		self.preloadedfilename	=	None
+
+	# -------------------------------------------------------------------
+	def Preload(self, filename):
+		self.preload						=	filename
+		self.preloadedimg				=	None
+		self.preloadedfilename	=	None
+
+	# -------------------------------------------------------------------
+	def Load(self, filename):
+		try:
+			if self.preloadedimg and self.preloadedfilename == filename:
+				self.pixmap							=	self.preloadedimg
+				self.preload						=	''
+				self.preloadedimg				=	None
+				self.preloadedfilename	=	None
+			else:
+				self.pixmap			=	QPixmap(filename)
+
+			self.filename		=	filename
+			self.dx					=	0
+			self.dy					=	0
+
+			w	=	self.width()
+			h	=	self.height()
+
+			iw	=	self.pixmap.width()
+			ih	=	self.pixmap.height()
+
+			if not iw or not ih:
+				raise Exception(Printf('{} is not a valid image!', filename))
+
+			imgratio		=	float(iw) / ih
+			screenratio	=	float(w) / h
+
+			if imgratio > screenratio:
+				self.zoom	=	w / iw
+			else:
+				self.zoom	=	h / ih
+		except Exception as e:
+			self.pixmap	=	None
+			self.SetMsg('Error: ' + str(e), RED, self.CENTER)
+
+		self.repaint()
+
+	# -------------------------------------------------------------------
+	def SetMsg(self, msg, color = GREEN, position	=	1):
+		self.msgs[position - 1]		=	msg
+		self.textcolor						=	color
+		self.repaint()
+
+	# -------------------------------------------------------------------
+	def Rotate(self, angle):
+		if self.pixmap:
+			self.pixmap	=	self.pixmap.transformed(QTransform().rotate(angle))
+			self.pixmap.save(self.filename)
+			self.repaint()
+
+	# -------------------------------------------------------------------
+	def Move(self, dx, dy):
+		self.dx	+=	dx
+		self.dy	+=	dy
+		self.repaint()
+
+	# -------------------------------------------------------------------
+	def Zoom(self, zoom):
+		if self.pixmap:
+			newzoom			=	self.zoom * zoom
+			imgw				=	self.pixmap.width()
+			imgh				=	self.pixmap.height()
+			newimgw			=	imgw * newzoom
+			newimgh			=	imgh * newzoom
+			dx					=	((imgw * newzoom) - (imgw * self.zoom)) / 6
+			dy					=	((imgh * newzoom) - (imgh * self.zoom)) / 6
+			self.dx			-=	dx
+			self.dy			+=	dy
+			self.zoom		=	newzoom
+			self.repaint()
+
+	# -------------------------------------------------------------------
+	def paintEvent(self, e):
+		p	=	QPainter()
+		p.begin(self)
+		self.drawWidget(p)
+		p.end()
+
+	# -------------------------------------------------------------------
+	def drawWidget(self, p):
+		p.setRenderHint(QPainter.Antialiasing)
+		p.setRenderHint(QPainter.TextAntialiasing)
+		p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+		w	=	self.width()
+		h	=	self.height()
+
+		p.setBrush(BLACK)
+		p.drawRect(0, 0, w, h)
+
+		font = QFont('Serif', 16, QFont.Light)
+		p.setFont(font)
+
+		if self.pixmap:
+			iw	=	self.pixmap.width() * self.zoom
+			ih	=	self.pixmap.height() * self.zoom
+
+			rt	=	QRect(
+				w / 2 - iw / 2 + self.dx,
+				h / 2 - ih / 2 + self.dy,
+				iw,
+				ih,
+			)
+
+			p.drawPixmap(rt, self.pixmap)
+
+		blackpen	=	QPen(QColor(0x00, 0x66, 0x00))
+		blackpen.setWidth(0.5)
+
+		p.setPen(blackpen)
+		p.setBrush(GREEN)
+		path	=	QPainterPath()
+
+		for i in range(1, 6):
+			if self.msgs[i - 1]:
+				textw	=	p.fontMetrics().width(self.msgs[i - 1])
+				texth	=	p.fontMetrics().height()
+
+				if i == self.TOP_LEFT:
+					x	=	10
+					y	=	24
+				elif i == self.TOP_RIGHT:
+					x	=	w - 10 - textw
+					y	=	24
+				elif i == self.BOTTOM_LEFT:
+					x	=	10
+					y	=	h - 36
+				elif i == self.BOTTOM_RIGHT:
+					x	=	w - 10 - textw
+					y	=	h - 36
+				else:
+					x	=	w / 2 - textw / 2
+					y	=	h / 2 - texth / 2
+
+				path.addText(x, y, font, self.msgs[i - 1])
+
+		p.drawPath(path)
+
+		if self.preload and 'preload' in sys.argv:
+			try:
+				self.preloadedimg				=	QPixmap(self.preload)
+				self.preloadedfilename	=	self.preload
+				self.preload						=	''
+			except Exception as e:
+				Print('Problem preloading {}: {}', self.preload, e)
+				self.preloadedimg				=	None
+				self.preloadedfilename	=	None
+				self.preload						=	''
+
+
+# *********************************************************************
+class MainWnd(QMainWindow):
+
+	WAITING		=	1
+	SCANNING	=	2
+	PAUSED		=	3
+	STOPPED		=	4
+
+	# -------------------------------------------------------------------
+	def __init__(self, dirname):
+		super().__init__()
+
+		self.dirname			=	dirname
+		self.imgwidget		=	ImageWidget()
+
+		self.setCentralWidget(self.imgwidget)
+
+		self.pausescan		=	Value('i', 0)
+		self.stopscan			=	Value('i', 0)
+		self.scanprocess	=	Process(
+			target = ScanDir,
+			args = (
+				self.pausescan,
+				self.stopscan,
+				dirname
+			)
+		)
+		self.scanstatus		=	self.WAITING
+		self.lastdeleted	=	0
+
+		if len(sys.argv) > 2:
+			self.filepattern	=	sys.argv[2].lower()
+		else:
+			self.filepattern	=	''
+
+		self.RefreshFilelist()
+		
+		if not len(self.filelist):
+			self.Scan()
+
+		self.showMaximized()
+
+	# -------------------------------------------------------------------
+	def RefreshFilelist(self):
+		if self.filepattern:
+			filepattern	=	" AND LOWER(filename) LIKE '" + self.filepattern + "'"
+		else:
+			filepattern	=	''
+
+		self.db	=	DB('default', os.path.join(os.path.expanduser('~'), '.config', 'viewphotos.db'))
+
+		self.filelist	=	DBList(DBFile(db = self.db))
+		self.filelist.Filter(Printf("""JOIN dbdirectory ON dbdirectory.id = dbfile.directoryid
+				WHERE dirname LIKE '{}%' {}
+				""",
+				dirname,
+				filepattern
+			),
+			[]
+		)
+		self.filelist.OrderBy('directoryid, filename')
+		self.filepos		=	0
+		self.totalsize	=	1
+
+		r	=	db.Query(Printf("""SELECT SUM(size) AS s
+			FROM dbfile
+			JOIN dbdirectory ON dbdirectory.id = dbfile.directoryid
+			WHERE dirname LIKE '{}%' {}
+			""",
+			dirname,
+			filepattern
+		))
+
+		if r:
+			self.totalsize	=	r[0]['s']
+
+		self.imgwidget.SetMsg('Scanning for images...')
+		QTimer.singleShot(1000, self.LoadImage)
+
+	# -------------------------------------------------------------------
+	def LoadImage(self, pos = 0):
+		l	=	len(self.filelist)
+
+		if l == 0:
+			self.imgwidget.SetMsg('No files found!', RED)
+			return
+
+		if pos < 0:
+			pos	=	0
+
+		if pos > l - 1:
+			pos	=	l	-	1
+
+		fullpath	=	self.filelist[pos].FullPath()
+		size			=	self.filelist[pos].size
+
+		if not os.path.isfile(fullpath):
+			self.DeleteImage()
+		else:
+			self.imgwidget.Load(fullpath)
+			self.filepos	=	pos
+
+			if pos < l - 2:
+				self.imgwidget.Preload(self.filelist[pos + 1].FullPath())
+
+			if len(fullpath) > 90:
+				fullpath	=	fullpath[0:30] + '...' + fullpath[-60:]
+
+			self.imgwidget.SetMsg(fullpath, position = ImageWidget.TOP_LEFT)
+
+			if self.imgwidget.pixmap:
+				self.imgwidget.SetMsg(Printf(
+						"{} x {}",
+						self.imgwidget.pixmap.width(),
+						self.imgwidget.pixmap.height(),
+					), position = ImageWidget.TOP_RIGHT)
+				self.imgwidget.SetMsg('', position = ImageWidget.CENTER)
+
+			self.imgwidget.SetMsg(Printf(
+					"{}KiB / {}KiB",
+					int(size / 1024),
+					int(self.totalsize / 1024),
+				), position = ImageWidget.BOTTOM_LEFT)
+			self.imgwidget.SetMsg(Printf(
+					"{} / {} {}",
+					pos + 1,
+					l,
+					'(random)' if self.filelist.randomlist else ''
+				), position = ImageWidget.BOTTOM_RIGHT)
+
+	# -------------------------------------------------------------------
+	def PreviousImage(self):
+		self.LoadImage(self.filepos - 1)
+
+	# -------------------------------------------------------------------
+	def NextImage(self):
+		self.LoadImage(self.filepos + 1)
+
+	# -------------------------------------------------------------------
+	def RandomImage(self):
+		self.filelist.SetRandom(not self.filelist.randomlist)
+		self.LoadImage(self.filepos)
+
+	# -------------------------------------------------------------------
+	def DeleteImage(self):
+		l	=	len(self.filelist)
+
+		if self.filepos < 0 or self.filepos > l - 1:
+			return
+
+		self.pausescan.value	=	1
+
+		try:
+			fullpath	=	self.filelist[self.filepos].FullPath()
+			self.lastdeleted	=	fullpath
+			os.rename(fullpath, fullpath + '.deleted')
+		except Exception as e:
+			Print('Problem deleting file {}: {}', self.filelist[self.filepos].FullPath(), e)
+
+		self.totalsize	-=	self.filelist[self.filepos].size
+		del self.filelist[self.filepos]
+		db.Commit()
+
+		self.pausescan.value	=	0
+
+		self.LoadImage(self.filepos)
+
+	# -------------------------------------------------------------------
+	def mousePressEvent(self, evt):
+		b	=	evt.button()
+		w	=	float(self.width())
+		h	=	float(self.height())
+		p	=	evt.globalPos()
+		
+		sector	=	floor(p.x() * 3 / w) + floor(p.y() * 3 / h) * 3
+		
+		if b == Qt.MouseButton.LeftButton:
+			if sector == 5:
+				self.NextImage()
+			elif sector == 3:
+				self.PreviousImage()
+			elif sector == 1:
+				self.GotoRandomImage()
+			elif sector == 7:
+				self.DeleteImage()
+			elif sector == 0:
+				self.imgwidget.Zoom(0.80)
+			elif sector == 2:
+				self.imgwidget.Zoom(1.25)
+			elif sector == 4:
+				self.ToggleFullScreen()
+			elif sector == 6:
+				self.imgwidget.Rotate(-90)
+			elif sector == 8:
+				self.imgwidget.Rotate(90)
+		
+	# -------------------------------------------------------------------
+	def keyPressEvent(self, evt):
+		k	=	evt.key()
+		m	=	evt.modifiers()
+
+		Print(k)
+
+		if k == 32:
+			if m & Qt.ShiftModifier:
+				self.LoadImage(self.filepos + 100)
+			elif m & Qt.ControlModifier:
+				self.LoadImage(self.filepos + 10)
+			else:
+				self.NextImage()
+		elif k == 16777219:
+			if m & Qt.ShiftModifier:
+				self.LoadImage(self.filepos - 100)
+			elif m & Qt.ControlModifier:
+				self.LoadImage(self.filepos - 10)
+			else:
+				self.PreviousImage()
+		elif k == 82:
+			self.RandomImage()
+		elif k == 68:
+			self.DeleteImage()
+		elif k == 46:
+			self.imgwidget.Rotate(90)
+		elif k == 44:
+			self.imgwidget.Rotate(-90)
+		elif k == 61:
+			self.imgwidget.Zoom(1.25)
+		elif k == 45:
+			self.imgwidget.Zoom(0.8)
+		elif k == 69:
+			self.RefreshFilelist()
+		elif k == 16777236:
+			if m & Qt.ShiftModifier:
+				self.LoadImage(self.filepos + 100)
+			elif m & Qt.ControlModifier:
+				self.LoadImage(self.filepos + 10)
+			else:
+				self.imgwidget.Move(-256, 0)
+		elif k == 16777234:
+			if m & Qt.ShiftModifier:
+				self.LoadImage(self.filepos - 100)
+			elif m & Qt.ControlModifier:
+				self.LoadImage(self.filepos - 10)
+			else:
+				self.imgwidget.Move(256, 0)
+		elif k == 16777235:
+			self.imgwidget.Move(0, 256)
+		elif k == 16777237:
+			self.imgwidget.Move(0, -256)
+		elif k == 84:
+			self.GotoRandomImage()
+		elif k == 70:
+			self.ToggleFullScreen()
+		elif k == 78:
+			self.Scan()
+		elif k == 71:
+			fromfile	=	self.filelist[self.filepos].FullPath()
+			tofile		=	self.dirname + '/Favorites'
+			
+			if not os.path.isfile(tofile):
+				subprocess.call(['mv', '-v', fromfile, tofile])
+				self.DeleteImage()
+			else:
+				fromsize	=	os.path.getsize(fromfile)
+				tosize		=	os.path.getsize(tofile)
+				
+				if fromsize != tosize:
+					basename, ext	=	os.path.splitext(tofile)
+					
+					for i in range(1, 9999):
+						nextfile	=	Printf('{}-{:04}', basename, i)
+						
+						if not os.path.isfile(nextfile):
+							subprocess.call(['mv', '-v', fromfile, nextfile])
+							self.DeleteImage()
+							break
+						
+		elif k == 85:
+			if self.lastdeleted:
+				os.rename(self.lastdeleted + '.deleted', self.lastdeleted)
+				Print('Restored deleted file ' + self.lastdeleted)
+				self.lastdeleted	=	0
+		elif k == 16777216:
+			app.quit()
+			
+	# -------------------------------------------------------------------
+	def GotoRandomImage(self):
+		self.LoadImage(random.randint(0, len(self.filelist)));
+		
+	# -------------------------------------------------------------------
+	def ToggleFullScreen(self):
+		if self.isFullScreen():
+			self.showMaximized()
+		else:
+			self.showFullScreen()
+		
+	# -------------------------------------------------------------------
+	def Scan(self):
+			if self.scanstatus == self.SCANNING:
+				if self.scanprocess.is_alive():
+					self.pausescan.value	=	1
+					self.scanstatus	=	self.PAUSED
+					Print('Scanning paused.')
+				else:
+					self.scanprocess	=	Process(
+						target = ScanDir,
+						args = (
+							self.pausescan,
+							self.stopscan,
+							self.dirname
+						)
+					)
+					self.scanprocess.start()
+					self.scanstatus	=	self.SCANNING
+					Print('Scanning...')
+			elif self.scanstatus == self.WAITING:
+				self.scanprocess.start()
+				self.scanstatus	=	self.SCANNING
+				Print('Scanning...')
+			elif self.scanstatus == self.PAUSED:
+				self.pausescan.value	=	0
+				self.scanstatus	=	self.SCANNING
+				Print('Scanning...')
+			elif self.scanstatus == self.STOPPED:
+				self.scanprocess	=	Process(
+					target = ScanDir,
+					args = (
+						self.pausescan,
+						self.stopscan,
+						self.dirname
+					)
+				)
+				self.scanprocess.start()
+				self.scanstatus	=	self.SCANNING
+				Print('Scanning...')
+
+	# -------------------------------------------------------------------
+	def closeEvent(self, evt):
+		self.stopscan.value	=	1
+
+		if self.scanprocess.is_alive():
+			self.scanprocess.join()
+
+# *********************************************************************
+if __name__ == '__main__':
+	dirname	=	os.path.abspath(sys.argv[1])
+
+	if not os.path.isdir(dirname):
+		Print('{} is not a directory.', dirname)
+		sys.exit()
+
+	app = QApplication(sys.argv)
+	db	=	DB('default', os.path.join(os.path.expanduser('~'), '.config', 'viewphotos.db'))
+
+	DBFile(db).CreateTable()
+	DBDirectory(db).CreateTable()
+
+	mainwnd	=	MainWnd(dirname)
+	mainwnd.show()
+
+	app.exec_()

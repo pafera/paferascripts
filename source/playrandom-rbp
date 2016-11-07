@@ -1,0 +1,59 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import random
+
+from possumtypes import *
+
+# =====================================================================
+def GetSeries(filename):
+	series	=	filename.split(' - ')
+	
+	if len(series) > 1:
+		return series[0]
+	
+	return ''
+
+filelist	=	[]
+exp				=	re.compile('.*\.(avi|mp4|m4v|flv|mov|mkv|3gp|3gpp|ogv|mts|mpg|mpeg|wmv|oga|ogg|wma|mp3|m4a|rm|rmvb|webm)$', re.IGNORECASE)
+
+searchparm	=	sys.argv[2] if len(sys.argv) > 2 else None
+
+Print("Using searchparm {}", searchparm)
+
+for root, dirs, files in os.walk(os.path.abspath(sys.argv[1])):
+	for f in files:
+		if exp.match(f):
+			if searchparm and searchparm not in f.lower():
+					continue
+					
+			filelist.append([os.path.join(root, f), GetSeries(f)])
+
+random.shuffle(filelist)
+
+# Avoid playing two consecutive files from the same series if possible
+l	=	len(filelist)
+
+for i in range(0, l - 1):
+	series1	=	filelist[i][1]
+	series2	=	filelist[i + 1][1]
+	
+	if series1 == series2:
+		for j in range(0, l - 2):
+			if filelist[j][1] != series2 and filelist[j + 1][1] != series2 and filelist[j + 2][1] != series2:
+				filelist[i + 1], filelist[j + 1]	=	filelist[j + 1], filelist[i + 1]
+				break
+
+for f in filelist:
+	subprocess.call(['xterm', '-e', 'omxplayer', 
+		'-b', 
+		'-o', 'hdmi', 
+		'--vol', '-2000', 
+		'--key-config', '/home/pi/bin/omxkeyconfig',
+		f[0]]
+	)
+

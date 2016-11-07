@@ -1,0 +1,14 @@
+#!/usr/bin/python3
+
+import subprocess
+import os
+import sys
+import os.path
+
+cmdline	=	['ffmpeg', '-i', sys.argv[1], '-movflags', '+faststart', '-c:v', 'libx264', '-crf', sys.argv[2], '-c:a', 
+'aac', '-strict', 
+'experimental', '-b:a', sys.argv[3]]
+cmdline.extend(sys.argv[4:])
+cmdline.append(sys.argv[1] + '.mp4')
+
+subprocess.call(cmdline)

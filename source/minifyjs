@@ -1,0 +1,41 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import random
+
+from possumtypes import *
+
+if len(sys.argv) < 2:
+	print("""Usage: minifyjs [path]
+	
+	Minifies all of the javascript and CSS files found in the given
+	directory using yuicompressor.
+	""")
+	sys.exit()
+
+exp				=	re.compile('.*\.(js|css)$', re.IGNORECASE)
+
+for root, dirs, files in os.walk(os.path.abspath(sys.argv[1])):
+	for f in files:
+		if exp.match(f):
+			if '.min.' in f:
+				continue
+				
+			try:
+				filename, ext	=	os.path.splitext(f)
+				oldpath	=	os.path.join(root, f)
+				newpath	=	os.path.join(root, filename + '.min' + ext)
+				
+				if os.path.isfile(newpath):
+					if os.path.getmtime(oldpath) <= os.path.getmtime(newpath):
+						continue
+				
+				Print('{}\t>\t{}', oldpath, newpath)
+				subprocess.call(['yui-compressor', oldpath, '-o', newpath])
+			except Exception as e:
+				Print('Problem processing: {}', e);
+

@@ -1,0 +1,382 @@
+#!/usr/bin/python
+
+# connectto
+#
+# Front-end to iw, iwconfig, and ip to setup wired or 
+# wireless connections with DHCP or static IPs.
+#
+# Useful for debugging wireless APs as it can connect to
+# individual APs broadcasting the same SSID.
+#
+# Usage:
+#
+#		connectto	scan
+#			Scans for detectable APs
+#		
+#		connectto wired [staticip] [gateway] [dns]
+#			Setup a wired connection.
+#
+#		connectto essid[/password] [staticip] [gateway] [dns]
+#			Setup a wireless connection.
+#
+# Released under the GPL by Jim Yu (me@pafera.com)
+
+import sys
+import subprocess
+import os
+import re
+import pickle
+import time
+
+# =====================================================================
+# Simple but effective way of seeing if it's a wireless device
+def IsWireless(dev):
+	if d != 'lo' and ('w' in d 
+			or 'ath' in d 
+			or 'ra' in d
+			or 'rt' in d
+			or 'ndis' in d
+			or 'brcm' in d
+			or 'b43' in d
+			or 'broadcom' in d
+		):
+		return 1
+	
+	return 0
+
+# =====================================================================
+def IsWired(dev):
+	if 'eth' in dev or 'enp' in dev:
+		return 1
+	
+	return 0
+
+# =====================================================================
+def GetDevices():
+	devices	=	[]
+
+	output	=	subprocess.check_output(['ifconfig', '-a']).decode('utf-8')
+
+	return re.findall("^([A-Za-z0-9]+)\:*", output, re.MULTILINE)
+
+# =====================================================================
+def SaveSSIDs(ssids):
+	with open(configdir + '/ssids', 'wb') as f:
+		pickle.dump(ssids, f)
+
+# =====================================================================
+def LoadSSIDs():
+	try:
+		with open(configdir + '/ssids', 'rb') as f:
+			return pickle.load(f)
+	except Exception as e:
+		return []
+
+# =====================================================================
+def SavePasswords(ssids):
+	with open(configdir + '/passwords', 'wb') as f:
+		pickle.dump(ssids, f)
+
+# =====================================================================
+def LoadPasswords():
+	try:
+		with open(configdir + '/passwords', 'rb') as f:
+			return pickle.load(f)
+	except Exception as e:
+		return {}
+
+# =====================================================================
+def Connect(dev, cfg, password, staticip, gateway, dns):
+	print('Clearing previous settings...')
+	subprocess.call(['ip', 'link', 'set', 'up', 'dev', dev])
+	subprocess.call(['ip', 'addr', 'flush', 'dev', dev])
+	subprocess.call(['ip', 'route', 'flush', 'dev', dev])
+	subprocess.call(['ip', 'link', 'set', dev, 'down'])
+	
+	subprocess.call(['ip', 'link', 'set', dev, 'up'])
+	
+	if IsWireless(dev):
+		if (cfg['wpa2'] or cfg['wpa'] or cfg['wep']):
+			if not password:
+				if cfg['bssid'] in passwords:
+					password	=	passwords[cfg['bssid']]
+				else:
+					print('Could not find password ')
+					return
+			else:
+				passwords[cfg['bssid']]	= password
+				SavePasswords(passwords)
+		
+		if password:
+			if cfg['wpa2'] or cfg['wpa']:
+				passwordfile	=	configdir + '/key'
+				
+				with open(passwordfile, 'w') as f:
+					linenum	=	0
+				
+					for l in subprocess.check_output(['wpa_passphrase', cfg['ssid'], password]).decode('utf-8').split("\n"):
+						# Only associate with this specific AP
+						if linenum == 1:
+							f.write("\tbssid=" + cfg['bssid'] + "\n")
+						
+						f.write(l + "\n")
+						linenum	+= 1
+				
+				subprocess.call(['killall', 'wpa_supplicant'])
+				
+				subprocess.Popen(['wpa_supplicant', '-D', 'nl80211,wext', '-i', dev, '-c', passwordfile])
+				print('Waiting five seconds to associate with AP...')
+				time.sleep(5)
+			else:
+				if cfg['useiw']:
+					subprocess.call(['iw', 'dev', dev, 'connect', '-w', cfg['ssid'], '0:' + password])
+				else:
+					subprocess.call(['iwconfig', dev, 'essid', cfg['ssid'], 'key', password])
+		# Open network
+		else: 
+			if cfg['useiw']:
+				subprocess.call(['iw', 'dev', dev, '-w', 'connect', cfg['ssid']])
+			else:
+				subprocess.call(['iwconfig', dev, 'essid', cfg['ssid']])
+					
+	if staticip:
+		print('Waiting ten seconds before adding static IP...')
+		time.sleep(10)
+		print('Adding static IP ' + staticip)
+		subprocess.call(['ip', 'addr', 'add', staticip, 'dev', dev])
+		
+		if not gateway:
+			p	=	staticip.rfind('.')
+			gateway	=	staticip[:p] + '.1'
+			print('Guessing ' + gateway + ' for gateway')
+			
+		subprocess.call(['ip', 'route', 'add', gateway, 'dev', dev])
+		subprocess.call(['ip', 'route', 'add', 'default', 'via', gateway, 'dev', dev])
+		
+		if dns:
+			with open('/etc/resolv.conf', 'w') as f:
+				for s in dns.split(','):
+					f.write('nameserver=' + s + "\n")
+	else:
+		print('Trying to get DHCP address...')
+		subprocess.call(['killall', 'dhcpcd'])
+		subprocess.call(['dhcpcd', dev])
+
+# =====================================================================
+def Scan(dev):
+	print('Scanning device ' + d + '...')
+	subprocess.call(['ip', 'link', 'set', 'up', 'dev', d])
+
+	useiw	=	1
+	
+	try:
+		output	=	subprocess.check_output(['iw', 'dev', d, 'scan']).decode('utf-8')
+	except Exception as e:
+		useiw	=	0
+		output	=	subprocess.check_output(['iwlist', d, 'scanning']).decode('utf-8')
+
+	bssids		=	[]
+	lastbssid	=	0
+
+	for l in output.split('\n'):
+		if len(l) > 0:
+			if 'WPA' in l or 'PSK' in l:
+				for i in bssids:
+					if i['bssid'] == lastbssid:
+						i['wpa']	=	1
+						break
+			
+			if 'RSN' in l or 'WPA2' in l:
+				for i in bssids:
+					if i['bssid'] == lastbssid:
+						i['wpa2']	=	1
+						break
+						
+			if 'WEP' in l or 'Privacy' in l:
+				for i in bssids:
+					if i['bssid'] == lastbssid:
+						i['wep']	=	1
+						break
+				
+			if useiw:
+				if l[0] == 'B':
+					lastbssid	=	l[4:21]
+					bssids.append({
+						'bssid':		lastbssid,
+						'wpa':			0,
+						'wpa2':			0,
+						'wep':			0,
+						'useiw':		1,
+						'channel':	0,
+						'signal':		0,
+						'ssid':			'',
+					})
+				else:
+					p	=	l.find('SSID')
+					
+					if p != -1:
+						for i in bssids:
+							if i['bssid'] == lastbssid:
+								i['ssid']	=	l[p + 6:]
+								break
+						
+					p	=	l.find('signal')
+					
+					if p != -1:
+						for i in bssids:
+							if i['bssid'] == lastbssid:
+								i['signal']	=	int(100 + float(l[p + 8:].split(' ')[0]))
+								break
+								
+					p	=	l.find('DS Parameter set')
+					
+					if p != -1:
+						for i in bssids:
+							if i['bssid'] == lastbssid:
+								i['channel']	=	l[p + 26:]
+								break
+			else:
+				p	=	l.find('Address:')
+				
+				if p != -1:
+					lastbssid	=	l[p + 9:]
+					bssids.append({
+						'bssid':		lastbssid,
+						'wpa':			0,
+						'wpa2':			0,
+						'wep':			0,
+						'useiw':		0,
+						'channel':	0,
+						'signal':		0,
+						'ssid':			'',
+					})
+					
+				p	=	l.find('ESSID')
+				
+				if p != -1:
+					for i in bssids:
+						if i['bssid'] == lastbssid:
+							i['ssid']	=	l[p + 7:-1]
+							break
+					
+				p	=	l.find('Signal level=')
+				
+				if p != -1:
+					for i in bssids:
+						if i['bssid'] == lastbssid:
+							i['signal']	=	int(l[p + 13:-6])
+							break
+							
+				p	=	l.find('Channel')
+				
+				if p != -1:
+					for i in bssids:
+						if i['bssid'] == lastbssid:
+							i['channel']	=	l[p + 8:-1]
+							break
+					
+	return bssids			
+
+# *********************************************************************
+args			=	sys.argv
+configdir	=	os.path.expanduser('~/.config/connectto')
+passwords	= LoadPasswords()
+
+try:
+	os.makedirs(configdir)
+except Exception as e:
+	pass
+
+if len(args) < 2:
+	print("""connectto	scan
+	Scans for detectable APs
+	
+connectto wired [staticip] [gateway] [dns]
+	Setup a wired connection.
+
+connectto essid[/password] [staticip] [gateway] [dns]
+	Setup a wireless connection.
+""")
+	sys.exit()
+
+# Avoid out of bound exceptions
+while len(args) < 5:
+	args.append('')
+
+devices	=	GetDevices()
+
+if args[1] == 'scan':
+	for d in devices:
+		if IsWireless(d):
+			bssids	=	Scan(d)
+			
+			if bssids:
+				bssids.sort(key = lambda d: -d['signal'])
+				
+				num = 1
+				
+				for i in bssids:
+					encryption	=	''
+					
+					if i['wpa2']:
+						encryption	= 'WPA2'
+					elif i['wpa']:
+						encryption	= 'WPA'
+					elif i['wep']:
+						encryption	=	'WEP'
+						
+					haspassword	= ''
+					
+					if i['bssid'] in passwords:
+						haspassword	=	'Has previous password'
+					
+					print("{:<4}{:<30}{:>3}%   Channel {:<6}{:<8}{:<24}".format(num, i['ssid'][:29], i['signal'], i['channel'], encryption, haspassword))
+					num	+= 1
+					
+				SaveSSIDs(bssids)
+			else:
+				print('No wireless networks found')
+				
+			break
+else:	
+	if args[1] == 'wired':
+		
+		for d in devices:
+			if IsWired(d):
+				Connect(d, '', '', args[2], args[3], args[4])
+				break
+	else:
+		ssids	=	LoadSSIDs()
+		
+		p	= args[1].find('/')	
+		
+		if p != -1:
+			ssidtofind	=	args[1][:p]
+			password		= args[1][p + 1:]
+		else:
+			ssidtofind	= args[1]
+			password		= ''
+		
+		found	=	0
+		
+		for id in ssids:
+			if id['ssid'] == ssidtofind:
+				found	=	1
+				
+				for d in devices:
+					if IsWireless(d):
+						Connect(d, id, password, args[2], args[3], args[4])
+				break
+				
+		if not found:
+			try:
+				index = int(ssidtofind) - 1
+				
+				if index >= 0 and index < len(ssids):
+					for d in devices:
+						if IsWireless(d):
+							Connect(d, ssids[index], password, args[2], args[3], args[4])
+			except Exception as e:
+				print(e)
+				print('SSID ' + ssidtofind + ' not found.')
+

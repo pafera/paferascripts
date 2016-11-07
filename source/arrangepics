@@ -1,0 +1,172 @@
+#!/usr/bin/python3
+
+# arrangepics
+#
+# Sorts a directory of JPEG images according to filename or
+# EXIF date. 
+#
+# Usage
+#
+#		arrangepics dirname [mode]
+#
+#			mode can either be "time", "fixtime", or "filename"
+#			If not specified, time is used.
+#
+#	time:	Sort the files by year and month. A photo taken
+#				at 2014-03-02 will be stored in a subdirectory
+#				called 2014-03.
+#
+# filename:	Sort the files by the first two letters of the
+#				filename. A photo called "Happy Dogs" will be stored
+#				in a subdirectory called "Ha."
+# 
+# fixtime:	Sets the modified date of the file to match the
+#				date set in the EXIF tag. If there is no EXIF tag,
+#				the file date is unchanged.
+# 
+# Released under the GPL by Jim Yu (me@pafera.com)
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import random
+import hashlib
+import time
+
+from PIL import Image
+from PIL.ExifTags import TAGS
+
+from possumtypes import *
+
+rootdir		=	os.path.abspath(sys.argv[1])
+filelist	=	{}
+exp				=	re.compile('.*\.(jpg|jpeg)', re.IGNORECASE)
+pretend		=	True if 'pretend' in sys.argv else False
+mode			=	'filename' if 'filename' in sys.argv else 'time'
+
+if 'fixtime' in sys.argv:
+	mode	=	'fixtime'
+
+# =====================================================================
+def MD5File(fullpath):
+	hash	=	hashlib.md5()	
+	f	=	open(fullpath, 'rb')
+	
+	while True:
+		data	=	f.read(262144)
+		
+		if not data:
+			break
+			
+		hash.update(data)
+	
+	f.close()
+	return hash.hexdigest()
+
+# =====================================================================
+def MoveFile(fullpath, newfullpath):
+	if fullpath == newfullpath:
+		return
+	
+	try:	
+		Print('{}\t->\t{}', fullpath, newfullpath)
+		
+		if pretend:
+			return
+			
+		try:
+			os.makedirs(os.path.dirname(newfullpath))
+		except Exception as e:
+			pass
+		
+		# Check for duplicate files
+		if os.path.exists(newfullpath):
+			s1	=	os.stat(fullpath)
+			s2	=	os.stat(newfullpath)
+			
+			isduplicate	=	True
+			
+			# If files are not duplicates, assign a new name to the second file
+			if s1.st_size != s2.st_size or MD5File(fullpath) != MD5File(newfullpath):
+				filepath, extension	=	os.path.splitext(newfullpath)
+				
+				for i in range(1, 9999999):
+					newfullpath	=	filepath + '.' + str(i) + extension
+					
+					if not os.path.exists(newfullpath):
+						break
+			else:
+				# If there are duplicate files, remove the file not in the right
+				# location
+				os.remove(fullpath)
+				return
+			
+		os.rename(fullpath, newfullpath)
+	except Exception as e:
+		Print(e)
+
+# =====================================================================
+def ArrangeByName(rootdir, filedir, filename):
+	fullpath	=	os.path.join(filedir, filename)
+	
+	newfiledir	=	os.path.join(rootdir, filename[0:2].lower())	
+	newfullpath	=	os.path.join(newfiledir, filename)
+	MoveFile(fullpath, newfullpath)
+
+# =====================================================================
+def ArrangeByTime(rootdir, filedir, filename):
+	# Skip previously arranged files by checking the directory name
+	currentdir	=	os.path.basename(filedir)
+	
+	#if len(currentdir) >= 8 and currentdir[4] == '-' and currentdir[0:4].isdigit() and currentdir[5:7].isdigit():
+	#	return
+	
+	fullpath	=	os.path.join(filedir, filename)
+	
+	try:
+		img		=	Image.open(fullpath)
+		exif		=	img._getexif()
+	except Exception as e:
+		Print('Problem processing {}: {}', fullpath, e)
+		return
+	
+	if not exif:
+		return
+	
+	if 36867 in exif.keys():
+		filetime	=	exif[36867]
+	elif 306 in exif.keys():
+		filetime	=	exif[306]
+	else:
+		return
+	
+	if isinstance(filetime, tuple):
+		filetime	=	filetime[0]
+
+	if mode == 'fixtime' and filetime:
+		modified	=	time.mktime(time.strptime(filetime, '%Y:%m:%d %H:%M:%S'))
+		os.utime(fullpath, (modified, modified));
+		
+		Print('Fixed {}\tto\t{}', fullpath, modified);
+		return
+	
+	newfilename	=	filetime.replace(':', '-') + '.jpg'
+	newfiledir	=	os.path.join(rootdir, newfilename[0:7])
+	
+	if filedir == newfiledir:
+		return
+		
+	newfullpath	=	os.path.join(newfiledir, newfilename)
+		
+	MoveFile(fullpath, newfullpath)
+
+# =====================================================================
+for root, dirs, files in os.walk(rootdir):
+	for f in files:
+		if exp.match(f):
+			if mode == 'time' or mode == 'fixtime':
+				ArrangeByTime(rootdir, root, f)
+			elif mode == 'filename':
+				ArrangeByName(rootdir, root, f)

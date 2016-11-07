@@ -1,0 +1,35 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import random
+
+from possumtypes import *
+
+if len(sys.argv) < 5:
+	print('compresspics [filename] [quality] [resizedpercentage] [replacelimit]')
+	sys.exit()
+
+quality		=	int(sys.argv[2])
+resize		=	int(sys.argv[3])
+percentlimit	=	int(sys.argv[4])
+
+oldpath	=	os.path.join(root, f)
+newpath	=	'/tmp/' + 'compresspics'
+
+subprocess.call(['convert', oldpath, '-resize', str(resize) + '%', '-quality', str(quality), newpath])
+
+oldstats	=	os.stat(oldpath)
+newstats	=	os.stat(newpath)
+
+compressedpercentage	=	(float(oldstats.st_size) - newstats.st_size) / oldstats.st_size * 100;
+
+if compressedpercentage > percentlimit:
+	Print('Compressed {} {:.0f}%', oldpath, compressedpercentage)
+	os.rename(newpath, oldpath)
+else:
+	Print('Only compressed {} {:.0f}%', oldpath, compressedpercentage)
+	os.remove(newpath)
