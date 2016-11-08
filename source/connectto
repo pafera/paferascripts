@@ -288,14 +288,26 @@ except Exception as e:
 	pass
 
 if len(args) < 2:
-	print("""connectto	scan
-	Scans for detectable APs
-	
-connectto wired [staticip] [gateway] [dns]
-	Setup a wired connection.
+	print("""connectto
 
-connectto essid[/password] [staticip] [gateway] [dns]
-	Setup a wireless connection.
+Front-end to iw, iwconfig, and ip to setup wired or 
+wireless connections with DHCP or static IPs.
+
+Useful for debugging wireless APs as it can connect to
+individual APs broadcasting the same SSID.
+
+Usage:
+
+	connectto	scan
+		Scans for detectable APs
+	
+	connectto wired [staticip] [gateway] [dns]
+		Setup a wired connection.
+
+	connectto essid[/password] [staticip] [gateway] [dns]
+		Setup a wireless connection.
+
+Released under the GPL by Jim Yu (me@pafera.com)
 """)
 	sys.exit()
 

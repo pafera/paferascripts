@@ -5,6 +5,20 @@ import os
 import sys
 import os.path
 
+if (len(sys.argv) < 2)
+	print """tohevc sourcefile videoquality audiobitrate [additionalargs...]
+
+Converts sourcefile to a HEVC MP4 file using ffmpeg.
+
+videoquality should be from 1 to 50 with 25 being decent quality.
+
+audiobitrate should be from 64k to 256k with 128k being decent quality.
+
+additionalargs will be passed onto ffmpeg with any further processing.
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
+	sys.exit();
+
 cmdline	=	['ffmpeg', '-i', sys.argv[1], '-c:v', 'libx265', '-preset', sys.argv[2], '-x265-params', 'crf=' + sys.argv[3], '-c:a', 'aac', '-strict', 'experimental', '-b:a', sys.argv[4]]
 cmdline.extend(sys.argv[5:])
 cmdline.append(sys.argv[1] + '.mp4')

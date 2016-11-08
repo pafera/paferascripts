@@ -40,6 +40,34 @@ from PIL.ExifTags import TAGS
 
 from possumtypes import *
 
+if (len(sys.argv) < 2)
+	print """arrangepics
+
+Sorts a directory of JPEG images according to filename or
+EXIF date. 
+
+Usage
+
+		arrangepics dirname [mode]
+
+			mode can either be "time", "fixtime", or "filename"
+			If not specified, time is used.
+
+	time:	Sort the files by year and month. A photo taken
+				at 2014-03-02 will be stored in a subdirectory
+				called 2014-03.
+
+filename:	Sort the files by the first two letters of the
+				filename. A photo called "Happy Dogs" will be stored
+				in a subdirectory called "Ha."
+
+fixtime:	Sets the modified date of the file to match the
+				date set in the EXIF tag. If there is no EXIF tag,
+				the file date is unchanged.
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
+	sys.exit()
+
 rootdir		=	os.path.abspath(sys.argv[1])
 filelist	=	{}
 exp				=	re.compile('.*\.(jpg|jpeg)', re.IGNORECASE)

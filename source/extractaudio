@@ -1,3 +1,19 @@
-#!/bin/sh
+#!/usr/bin/python3
 
-ffmpeg -i "$1" -q:a 0 -map a "$1.mp3"
+import subprocess
+import os
+import sys
+import os.path
+
+if (len(sys.argv) < 2)
+	print """extractaudio sourcefile
+
+Converts sourcefile to a MP3 file using ffmpeg.
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
+	sys.exit();
+
+cmdline	=	['ffmpeg', '-i', sys.argv[1], '-q:a', '0', '-map', 'a']
+cmdline.append(sys.argv[1] + '.mp3')
+
+subprocess.call(cmdline)

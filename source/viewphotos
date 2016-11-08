@@ -769,6 +769,38 @@ class MainWnd(QMainWindow):
 
 # *********************************************************************
 if __name__ == '__main__':
+	
+	if (len(sys.argv) < 2)
+		print """Image viewer built using Python which remembers previous files
+without having to scan an entire directory tree by storing
+file data in a SQLite database. Show off your entire photo 
+album in an instant. Very useful on the Raspberry Pi with a
+wireless keyboard.
+
+	Usage:
+		viewphotos dirname
+
+Keys:
+
+Space				Next picture
+Backspace		Previous picture
+Arrow keys	Move image around
+=						Zoom in
+-						Zoom out
+t						Random image
+r						Enable random playlist mode
+d						Delete image (renames to image.deleted)
+u						Restore last deleted image
+g						Moves image to a subdirectory called "Favorites"
+f						Toggle fullscreen
+.						Rotates image left and automatically save
+/						Rotates image right and automatically save
+n						Rescan files
+Escape			Quit
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
+		sys.exit()
+	
 	dirname	=	os.path.abspath(sys.argv[1])
 
 	if not os.path.isdir(dirname):

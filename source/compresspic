@@ -9,8 +9,25 @@ import random
 
 from possumtypes import *
 
-if len(sys.argv) < 5:
-	print('compresspics [filename] [quality] [resizedpercentage] [replacelimit]')
+
+if (len(sys.argv) < 5)
+	print """compresspics filename quality resizedpercentage replacelimit
+
+Convenience script to see if an image can be compressed further without losing too much quality. Great for processing cell phone photos.
+
+quality is the quality setting for the JPEG compressor and can be from 0 to 100.
+
+resizedpercentage is a number from 1 to 100 denoting the new size of the image. Leave it at 100 for no processing.
+
+replacelimit is a number from 1 to 100. If the new size is this percentage smaller than the old file, then the new file will be used. Otherwise, the old file will remain untouched.
+
+Example usage:
+
+	compresspic test.jpg 70 50 30
+
+This will try to compress test.jpg while resizing it to half the original size. If the new file is more than 30% smaller than the original, then it will be used.
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
 	sys.exit()
 
 quality		=	int(sys.argv[2])

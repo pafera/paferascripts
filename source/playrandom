@@ -30,6 +30,17 @@ def GetSeries(filename):
 	
 	return ''
 
+if (len(sys.argv) < 2)
+	print """playrandom directory [searchterm] [additionalargs]
+	
+Randomly plays all found media files in directory and any given subdirectories using mpv. Great for keeping your kids entertained.
+
+If your files are in the standard format Show Name - S01E01 - Show Title, this script will try to avoid playing shows from the same series twice in a row as much as possible.
+
+Released under the GPL by Jim Yu (me@pafera.com)"""
+	sys.exit();
+
+
 filelist	=	[]
 exp				=	re.compile('.*\.(avi|mp4|m4v|flv|mov|mkv|3gp|3gpp|ogv|mts|mpg|mpeg|wmv|oga|ogg|wma|mp3|m4a|rm|rmvb|webm)$', re.IGNORECASE)
 
